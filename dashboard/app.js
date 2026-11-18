@@ -1,7 +1,9 @@
 // LaunchScope's dashboard. It reads window.RADAR (written beside dashboard/ by main.ts) and
 // renders the peer-priced launch board, the already-trading peer set, and a per-protocol detail
-// panel with the valuation breakdown and the full farm plan from board.json. No network: every
-// byte it shows is in data.js. Hash links are reproducible: #detail=<slug> opens a protocol,
+// panel with the valuation breakdown and the full farm plan from board.json. The breakdown's
+// figures are recomputed in the page by model.js (window.LS_MODEL) from the factors data.js
+// carries, so the numbers on screen are the numbers the code produces. No network: every byte
+// it shows is in data.js. Hash links are reproducible: #detail=<slug> opens a protocol,
 // #cat=<Category> applies that category filter on load.
 (function () {
   'use strict';
@@ -30,7 +32,10 @@
     return Math.max(0, Math.round(days)) + 'd';
   }
   function fmtMult(n) { return 'x' + Number(n).toFixed(4).replace(/0+$/, '').replace(/\.$/, '.0'); }
-  function chainsText(r) { return r.chains && r.chains.length ? r.chains.join(', ') : 'an unnamed chain'; }
+  function factsChains(r) {
+    if (!r.chains || !r.chains.length) return 'an unnamed chain';
+    return r.chains.length <= 4 ? r.chains.join(', ') : r.chains.slice(0, 4).join(', ') + ' +' + (r.chains.length - 4) + ' more';
+  }
 
   function el(tag, attrs) {
     var node = document.createElement(tag);
@@ -113,9 +118,8 @@
         el('p', null,
           'LaunchScope scans ', el('b', { text: String(c.protocols_scanned) }), ' protocols, finds ',
           el('b', { text: String(c.pre_token_found) }), ' with no token on record, and ranks ',
-          el('b', { text: String(c.board_size) }), ' of them by what a token would be worth if it ' +
-          'traded at the same market-cap to TVL multiple as its live category peers. Select any row ' +
-          'for the full breakdown and its farm plan.'
+          el('b', { text: String(c.board_size) }), ' of them by what a token would be worth at its live ' +
+          'category peers\u2019 market-cap to TVL multiple. Select any row for the breakdown and its farm plan.'
         )
       ),
       el('div', { class: 'chips' },
@@ -191,14 +195,17 @@
         el('td', { class: 'num ' + (r.change_7d === null ? '' : r.change_7d >= 0 ? 'pos' : 'neg'), text: fmtPct(r.change_7d) }),
         el('td', { class: 'num', text: fmtAge(r.age_days) }),
         el('td', { class: 'num', text: fmtMult(r.model.peer_multiple) }),
-        el('td', { class: 'num implied', text: fmtUsd(r.implied_value_usd) })
+        el('td', { class: 'num implied' },
+          el('b', { text: fmtUsd(r.implied_value_usd) }),
+          el('span', { class: 'sub', text: fmtUsd(r.implied_low_usd) + ' \u2013 ' + fmtUsd(r.implied_high_usd) })
+        )
       );
       tbody.appendChild(tr);
     });
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { text: 'Ranked by implied value. ★ marks the snapshot watchlist; the rest are early finds below its $50M floor.' }),
+          el('caption', { text: 'Ranked by implied value; the line under each value is its peer-quartile range. \u2605 marks the snapshot watchlist; the rest are finds the list leaves out, above its $50M floor as well as below it.' }),
           el('thead', null, el('tr', null,
             el('th', { text: 'Rank' }), el('th', { text: 'Protocol' }), el('th', { text: 'Category' }),
             el('th', { text: 'Chains' }), el('th', { text: 'TVL' }), el('th', { text: '7d' }),
@@ -243,14 +250,19 @@
 
   function methodPanel() {
     var m = DATA.model;
+    var x = DATA.exclusions;
     return el('section', { class: 'panel method' },
       el('h2', { text: 'How this radar prices a launch' }),
       el('p', { text: DATA.model_summary }),
-      el('div', { class: 'formula', text: 'implied = TVL x peer multiple (median mcap/TVL of live peers in the category, clamped ' +
-        m.multiple_min + ' to ' + m.multiple_max + ', ' + m.min_peers + '+ peers or the global median) x momentum (1 + clamp(7d change, ' +
-        m.momentum_floor + ', ' + m.momentum_cap + ')% x ' + m.momentum_weight + ') x maturity (' + m.maturity_floor + ' + ' + m.maturity_span +
-        ' x min(age, ' + m.maturity_days + 'd) / ' + m.maturity_days + ')' }),
-      el('p', { text: 'Momentum comes from the seven-day TVL change: a protocol gaining TVL is priced above its static peer value, one losing TVL below it. Maturity comes from the days DefiLlama has tracked the protocol with no token on record: the longer it has operated tokenless, the closer it is priced to the full peer multiple. Protocols whose token already trades are never ranked — they appear under Already trading at market value, and they are the peers this board is priced from.' })
+      el('div', { class: 'formula', text: 'peer multiple = (n x category median + ' + m.shrink_weight + ' x global median) / (n + ' +
+        m.shrink_weight + '), clamped ' + m.multiple_min + ' to ' + m.multiple_max + '; implied = TVL x peer multiple x momentum ' +
+        '(1 + clamp(7d change, ' + m.momentum_floor + ', ' + m.momentum_cap + ')% x ' + m.momentum_weight + ') x maturity (' +
+        m.maturity_floor + ' + ' + m.maturity_span + ' x min(age, ' + m.maturity_days + 'd) / ' + m.maturity_days + ')' }),
+      el('p', { text: 'Momentum comes from the seven-day TVL change: a protocol gaining TVL is priced above its static peer value, one losing TVL below it. Maturity comes from the days DefiLlama has tracked the protocol with no token on record: the longer it has operated tokenless, the closer it is priced to the full peer multiple. Protocols whose token already trades are never ranked — they appear under Already trading at market value, and they are the peers this board is priced from.' }),
+      el('p', { text: 'Coverage: the board ranks every watchlist protocol and every other pre-token protocol the snapshot\u2019s own screens leave standing, including ' +
+        x.off_list_finds + ' finds at or above the floor that the watchlist leaves out. It sets ' + x.total + ' pre-token protocols aside: ' +
+        x.exchange + ' exchanges, ' + x.versioned + ' versioned pools of another protocol, ' + x.named_product +
+        ' named as wrapped, staked or exchange products, and ' + x.product_category + ' in the bridged and staked product categories at or above the floor — each a product of a token that already trades, not a launch of its own.' })
     );
   }
 
@@ -286,22 +298,18 @@
       el('h3', { text: 'Facts' }),
       el('div', { class: 'facts' },
         fact('Category', row.category || 'Uncategorised'),
-        fact('Chains', chainsText(row)),
+        fact('Chains', factsChains(row)),
         fact('TVL', fmtUsd(row.tvl_usd)),
         fact('7d TVL change', fmtPct(row.change_7d)),
         fact('Listed', row.listed_at || 'not recorded'),
         fact('Age, no token', fmtAge(row.age_days)),
-        fact('Watchlist', row.watchlist ? 'yes — above the $50M floor' : 'no — early find below the floor'),
+        fact('Watchlist', row.watchlist ? 'yes — above the floor' : 'no — early find below the floor'),
         fact('Token status', 'no token on record')
       )
     ));
     var m = row.model;
-    var peerLabel = m.peer_scope === 'category'
-      ? 'x peer multiple (' + m.peer_count + ' live ' + (row.category || 'category') + ' peers)'
-      : 'x peer multiple (global median, ' + m.peer_count + ' live peers)';
-    var peerNote = m.peer_scope === 'category'
-      ? 'The peer multiple is the median market-cap / TVL of the already-trading protocols in this category in the same snapshot. This is the model\u2019s claim, not a launch prediction.'
-      : 'This category has fewer than three live peers with a market cap in the snapshot, so the row is priced on the global median market-cap / TVL of all live protocols instead. This is the model\u2019s claim, not a launch prediction.';
+    var range = window.LS_MODEL.valueRange(row);
+    var peerLabel = 'x peer multiple (' + window.LS_MODEL.scopeText(row) + ')';
     detail.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Valuation breakdown' }),
       el('div', { class: 'eq' },
@@ -309,12 +317,39 @@
         eqLine(peerLabel, fmtMult(m.peer_multiple)),
         eqLine('x momentum (7d change ' + fmtPct(row.change_7d) + ')', fmtMult(m.momentum_multiplier)),
         eqLine('x maturity (' + fmtAge(row.age_days) + ' with no token)', fmtMult(m.maturity_multiplier)),
-        eqLine('= implied value', fmtUsd(row.implied_value_usd), true)
+        eqLine('= implied value', fmtUsd(window.LS_MODEL.impliedValue(row)), true),
+        eqLine('value range (peer quartiles x' + Number(m.peer_q1_multiple).toFixed(2) + ' \u2013 x' + Number(m.peer_q3_multiple).toFixed(2) + ')',
+          fmtUsd(range.low) + ' \u2013 ' + fmtUsd(range.high))
       ),
-      el('p', { class: 'note', text: peerNote })
+      el('p', { class: 'note', text: 'The peer multiple blends the category\u2019s own live peers with the global market median in proportion to their count, so a thin category cannot price a launch on one peer alone. This is the model\u2019s claim, not a launch prediction.' })
     ));
+    if (row.peers && row.peers.length) {
+      var peerBody = el('tbody');
+      row.peers.forEach(function (peer) {
+        peerBody.appendChild(el('tr', null,
+          el('td', { text: peer.name }),
+          el('td', { class: 'num', text: fmtUsd(peer.mcap_usd) }),
+          el('td', { class: 'num', text: fmtUsd(peer.tvl_usd) }),
+          el('td', { class: 'num', text: fmtMult(peer.ratio) })
+        ));
+      });
+      detail.appendChild(el('section', { class: 'detail-section' },
+        el('h3', { text: 'The peers behind the multiple' }),
+        el('div', { class: 'table-wrap flat' },
+          el('table', { class: 'mini' },
+            el('thead', null, el('tr', null,
+              el('th', { text: 'Live peer' }), el('th', { text: 'Market cap' }), el('th', { text: 'TVL' }), el('th', { text: 'Mcap / TVL' })
+            )),
+            peerBody
+          )
+        ),
+        el('p', { class: 'note', text: 'The largest live peers in this row\u2019s peer set, from the same snapshot. Their median ratio, blended with the market\u2019s, is the multiple above.' })
+      ));
+    }
+    var totals = window.LS_MODEL.planTotals(row);
     detail.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
+      el('p', { class: 'plan-totals', text: 'Plan totals: ' + totals.summary + '.' }),
       el('ol', { class: 'steps' }, row.farm_steps.map(function (s) {
         var at = s.indexOf(' Cost: ');
         var action = at >= 0 ? s.slice(0, at) : s;
